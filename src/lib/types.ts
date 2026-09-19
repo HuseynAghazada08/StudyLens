@@ -96,7 +96,7 @@ export interface Quiz {
   createdAt: string;
 }
 
-/** Quiz shape sent to the client while taking — answers stay server-side. */
+/** Quiz-taking shape — omits answer keys held by the active storage backend. */
 export type PublicQuestion = Omit<Question, "correctAnswer" | "explanation">;
 export type PublicQuiz = Omit<Quiz, "questions"> & { questions: PublicQuestion[] };
 

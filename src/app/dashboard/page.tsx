@@ -15,16 +15,21 @@ import { ThemeToggle } from "@/components/ThemeToggle";
 import { UploadDropzone } from "@/components/UploadDropzone";
 import { createSupabaseBrowser } from "@/lib/supabase/client";
 import { hasSupabase } from "@/lib/env-client";
+import { listBrowserDocuments } from "@/lib/browser-store";
 import type { StudyDocument } from "@/lib/types";
 
 export default function DashboardPage() {
   const router = useRouter();
   const [documents, setDocuments] = useState<StudyDocument[] | null>(null);
   const [demoMode, setDemoMode] = useState(false);
-  const [temporaryStorage, setTemporaryStorage] = useState(false);
+  const browserStorage = !hasSupabase;
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (!hasSupabase) {
+      listBrowserDocuments().then(documents => { setDocuments(documents); setDemoMode(true); }).catch(e => setError(e.message));
+      return;
+    }
     fetch("/api/documents")
       .then(async (res) => {
         if (res.status === 401) {
@@ -39,7 +44,6 @@ export default function DashboardPage() {
         if (!data) return;
         setDocuments(data.documents);
         setDemoMode(data.demoMode);
-        setTemporaryStorage(data.temporaryStorage);
       })
       .catch((e) => setError(e.message));
   }, [router]);
@@ -81,7 +85,7 @@ export default function DashboardPage() {
           Upload a PDF and StudyLens builds summaries, notes, and quizzes from it.
         </p>
         <UploadDropzone />
-        {temporaryStorage && <p className="mt-3 text-xs text-stone-500">Local demo storage: your documents are isolated to this browser session, but disappear when the server restarts. Configure Supabase for persistent storage and deployed use.</p>}
+        {browserStorage && <p className="mt-3 text-xs text-stone-500">Saved in this browser. Documents and quiz results survive refreshes and server restarts. They are not shared across devices or deployment domains; clearing site data removes them.</p>}
       </section>
 
       <section>

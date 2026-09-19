@@ -17,7 +17,9 @@ Open `http://localhost:3000`, choose **Upload Your PDF**, then **Try sample PDF*
 
 No credentials are needed for this local demo. It uses extractive summaries, source-based recall quizzes, approximate keyword grading for short answers, and lexical retrieval for Q&A. It is clearly labeled **Offline demo**; these are not simulated OpenAI responses. Difficulty adjusts recall exercises rather than providing AI-level reasoning. Small documents or narrowly focused practice may reuse passages.
 
-Without Supabase, signed HttpOnly session cookies isolate visitors and data is stored in process memory. It survives ordinary development hot reloads but **not server restarts, cold starts, or multiple serverless instances**. Demo cookies expire after one day. Demo storage is capped at 20 documents per session and 200 per process. For deployed use, configure Supabase, even if you leave OpenAI disabled.
+Without Supabase, documents, extracted pages, summaries, quizzes, and the latest quiz results are saved in **IndexedDB in the browser**. The PDF upload endpoint is stateless: it extracts the file and returns a document snapshot, which the browser commits before navigating. Subsequent document loading, quiz generation/grading, weak-topic practice, and Q&A use that snapshot locally. No server-memory record, session cookie, signing secret, or Supabase instance is required. This works on Vercel across cold starts and different serverless instances.
+
+Browser storage is isolated by browser profile and origin. Reloads, new tabs on the same domain, and server restarts preserve the study session. Clearing site data, private-session termination, or browser storage eviction can remove it. Different Vercel preview URLs and devices have separate storage; document links are not shareable across them. Blocked/full storage produces an error instead of navigating to an unsaved document. Existing links from the old in-memory demo must be re-uploaded once because their server-only data was never persisted.
 
 ## Environment variables
 
@@ -30,15 +32,14 @@ Copy `.env.example` to `.env.local` and fill in the values you want to use. Neve
 | `NEXT_PUBLIC_SUPABASE_URL` | Your Supabase project URL. |
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Public anon key used for browser authentication. Never put a service-role key here. |
 | `SUPABASE_SERVICE_ROLE_KEY` | Server-only database credential; required when Supabase is configured. |
-| `DEMO_SESSION_SECRET` | Optional long random secret for signing local-demo session cookies. If absent, a process-local random key is generated. This does not make demo storage durable. |
 
 Restart the development server after changing environment variables. `NEXT_PUBLIC_*` values are included at build time, so rebuild after changing them on a deployment.
 
 Configuration combinations:
-- Neither provider: no login, process-local storage, extractive study tools.
-- Supabase only: real login and durable storage, extractive study tools.
-- OpenAI only: AI tools with process-local storage for **local development only**.
-- Both providers: authenticated AI workflow and durable storage.
+- Neither provider: no login, browser-persisted extractive study tools; works locally and on Vercel.
+- Supabase only: real login and server-persisted storage, extractive study tools.
+- OpenAI only: browser demo remains extractive; paid AI is not invoked without authenticated server mode.
+- Both providers: authenticated AI workflow and server-persisted storage.
 
 Paid AI routes on Vercel require Supabase authentication. Partial Supabase configuration is not supported; provide the URL, anon key, and server service-role key together.
 
@@ -83,7 +84,7 @@ Quiz and chat state remain intact when switching tabs. Previous quizzes can be r
 - Small documents use a bounded prompt. Large documents analyze **every chunk**, then merge summaries through bounded hierarchical reduction. Notes retain all processed sections rather than silently sampling a large PDF.
 - Q&A uses lexical retrieval of relevant chunks. General quizzes sample source chunks for coverage. Adaptive quizzes select the source pages associated with missed concepts.
 - Every model call requests JSON. Zod validates shapes and semantic constraints, including question count, options, correct-answer membership, requested difficulty/type, and cited page membership. Invalid model output gets one repair attempt, then a safe error response.
-- Answer keys and explanations are stripped from quizzes before submission. Objective questions are graded deterministically; AI short-answer grading receives the actual supporting passages.
+- Answer keys and explanations are stripped from the quiz-taking view. In Supabase mode, answer keys stay server-side. The standalone browser demo stores its questions and answer keys locally for offline grading; it is a self-study tool, not a tamper-proof exam system. Objective questions are graded deterministically; AI short-answer grading receives the actual supporting passages.
 - Prompts treat PDF text and student answers as untrusted data, not instructions.
 - Page validation establishes that citations refer to supplied pages; it cannot prove every generated sentence is correct. Verify important claims in the source viewer. Retrieval can miss relevant passages, especially for synonyms or tables.
 - Supported upload envelope: **4 MB, 80 pages, 160,000 extracted characters**. Larger documents should be split into chapters. The 4 MB cap leaves room for multipart overhead under Vercel's request-body limit.
@@ -107,7 +108,7 @@ npx playwright install chromium
 npm run test:e2e
 ```
 
-`TEST_BASE_URL` overrides `http://localhost:3000`. Tests cover PDF extraction, chunk reconstruction, citation validation, demo quiz types, targeted practice, file rejection, cross-session isolation, hidden answer keys, grading, chat, source dialogs, theme switching, and mobile overflow. Generated screenshots go into ignored `test-results/`.
+`TEST_BASE_URL` overrides `http://localhost:3000`. Set `TEST_SERVER_MODE=production` when testing a `next start` server: dynamic-port preview origins must then be rejected, while ordinary same-origin uploads still work. Tests cover both upload buttons, refresh and new-tab persistence with all document/quiz APIs blocked, browser isolation, storage errors, PDF extraction, citation validation, weak-topic practice, grading, chat, themes, and mobile overflow. Generated screenshots go into ignored `test-results/`.
 
 These offline tests do not validate your live OpenAI quota, model access, Supabase credentials, email delivery, deployed RLS, or hosted runtime limits. After configuring providers, smoke-test sign-up/sign-in, upload, reload, quiz submission, practice, cited Q&A, and access isolation using a second account.
 
@@ -115,9 +116,9 @@ These offline tests do not validate your live OpenAI quota, model access, Supaba
 
 1. Import the repository and set the Root Directory to `studylens` if your repository contains the parent Hackathon folder; otherwise use the repository root.
 2. Select the Next.js preset, Node.js 22, `npm ci` for install and `npm run build` for build. Leave the output directory at its default.
-3. Apply the Supabase migration and configure all Supabase variables in Vercel. Add `OPENAI_API_KEY` / `OPENAI_MODEL` to enable AI.
-4. Deploy. Add the deployed origin to your Supabase Authentication URL settings.
-5. Run the live smoke tests above. Confirm your plan supports the analysis route duration.
+3. For the standalone demo, leave all provider credentials unset. No database setup or signing secret is needed. To enable accounts and AI instead, apply the Supabase migration, configure all Supabase variables, and add `OPENAI_API_KEY` / `OPENAI_MODEL`.
+4. Deploy or redeploy after these changes. For Supabase mode only, add the deployed origin to your Supabase Authentication URL settings.
+5. Upload your own PDF and try the sample, refresh each workspace, then generate and submit a quiz. Demo data should remain accessible on the same browser and deployment domain. For AI mode, also run the live smoke tests above and confirm your plan supports the analysis route duration.
 
 No persistent local filesystem, Python process, native canvas, or external PDF worker is needed. `unpdf` provides the serverless-compatible PDF.js bundle. Never expose the OpenAI or service-role key using a `NEXT_PUBLIC_` prefix.
 

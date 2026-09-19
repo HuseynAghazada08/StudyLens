@@ -6,6 +6,8 @@ import { Badge, Card, EmptyState, Spinner } from "@/components/ui";
 import { PageCitation } from "@/components/PageCitation";
 import { cn } from "@/lib/utils";
 import type { ChatMessage } from "@/lib/types";
+import { hasSupabase } from "@/lib/env-client";
+import { browserAsk } from "@/lib/browser-store";
 
 const SUGGESTIONS = [
   "What is the main argument of this document?",
@@ -38,13 +40,16 @@ export function AskTab({
     setMessages((m) => [...m, { role: "user", content: q }]);
     setThinking(true);
     try {
-      const res = await fetch(`/api/documents/${documentId}/ask`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question: q }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error ?? "Could not answer that.");
+      const data = !hasSupabase ? await browserAsk(documentId, q) : await (async () => {
+        const res = await fetch(`/api/documents/${documentId}/ask`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ question: q }),
+        });
+        const result = await res.json();
+        if (!res.ok) throw new Error(result.error ?? "Could not answer that.");
+        return result;
+      })();
       setMessages((m) => [
         ...m,
         {

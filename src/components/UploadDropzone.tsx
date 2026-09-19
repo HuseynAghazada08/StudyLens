@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { FileUp, Loader2, UploadCloud, Sparkles } from "lucide-react";
 import { Card, Button } from "@/components/ui";
 import { cn } from "@/lib/utils";
+import { saveBrowserDocument, type BrowserDocument } from "@/lib/browser-store";
 
 type Phase = "idle" | "uploading" | "analyzing" | "error";
 
@@ -33,7 +34,7 @@ export function UploadDropzone() {
       if (file.size > 4 * 1024 * 1024) throw new Error("Please choose a PDF smaller than 4 MB.");
       const form = new FormData();
       form.append("file", file);
-      const data = await new Promise<{ documentId: string }>((resolve, reject) => {
+      const data = await new Promise<{ documentId: string; browserDocument?: BrowserDocument }>((resolve, reject) => {
         const xhr = new XMLHttpRequest();
         xhr.open("POST", "/api/documents");
         xhr.timeout = 310000;
@@ -49,6 +50,7 @@ export function UploadDropzone() {
         };
         xhr.send(form);
       });
+      if (data.browserDocument) await saveBrowserDocument(data.browserDocument);
       router.push(`/documents/${data.documentId}`);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Upload failed.");

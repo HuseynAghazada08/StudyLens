@@ -17,9 +17,9 @@ import type {
 } from "./types";
 
 /**
- * Storage abstraction. With Supabase env vars configured it reads/writes
- * Postgres (RLS applies via the session JWT); otherwise it falls back to a
- * per-process in-memory store so demo mode is fully functional.
+ * Server storage abstraction backed by Supabase Postgres.
+ * Routes enforce ownership before service-role operations.
+ * Standalone demo documents live in browser-store.ts, not server memory.
  */
 export interface Store {
   createDocument(input: {
@@ -56,100 +56,6 @@ export interface Store {
     weakTopics: WeakTopic[];
   }): Promise<string>;
 }
-
-/* ------------------------------ In-memory ------------------------------ */
-
-interface MemoryData {
-  documents: Map<string, StudyDocument>;
-  chunks: Map<string, DocumentChunk[]>;
-  materials: Map<string, StudyMaterial>;
-  quizzes: Map<string, Quiz>;
-  attempts: Map<string, QuizResult>;
-}
-
-// Survives Next.js dev-server hot reloads.
-const globalData = globalThis as unknown as { __studylens?: MemoryData };
-const data: MemoryData = (globalData.__studylens ??= {
-  documents: new Map(),
-  chunks: new Map(),
-  materials: new Map(),
-  quizzes: new Map(),
-  attempts: new Map(),
-});
-data.attempts ??= new Map();
-
-const memoryStore: Store = {
-  async createDocument({ userId, name, pageCount }) {
-    if (data.documents.size >= 200 || [...data.documents.values()].filter(d => d.userId === userId).length >= 20) throw new Error("Demo storage is full. Restart the local server or configure Supabase.");
-    const doc: StudyDocument = {
-      id: uid(),
-      userId,
-      name,
-      pageCount,
-      status: "processing",
-      error: null,
-      createdAt: new Date().toISOString(),
-    };
-    data.documents.set(doc.id, doc);
-    return doc;
-  },
-  async setDocumentStatus(id, status, error) {
-    const doc = data.documents.get(id);
-    if (doc) data.documents.set(id, { ...doc, status, error: error ?? null });
-  },
-  async getDocument(id) {
-    return data.documents.get(id) ?? null;
-  },
-  async listDocuments(userId) {
-    return [...data.documents.values()]
-      .filter((d) => d.userId === userId)
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  },
-  async saveChunks(documentId, chunks) {
-    data.chunks.set(documentId, chunks);
-  },
-  async getChunks(documentId) {
-    return data.chunks.get(documentId) ?? [];
-  },
-  async saveMaterial(documentId, material) {
-    data.materials.set(documentId, material);
-  },
-  async getMaterial(documentId) {
-    return data.materials.get(documentId) ?? null;
-  },
-  async createQuiz(input) {
-    const quiz: Quiz = {
-      id: uid(),
-      documentId: input.documentId,
-      userId: input.userId,
-      label: input.label,
-      difficulty: input.difficulty,
-      type: input.type,
-      questionCount: input.questionCount,
-      questions: input.questions,
-      parentQuizId: input.parentQuizId ?? null,
-      createdAt: new Date().toISOString(),
-    };
-    data.quizzes.set(quiz.id, quiz);
-    return quiz;
-  },
-  async getQuiz(id) {
-    return data.quizzes.get(id) ?? null;
-  },
-  async listQuizzes(documentId) {
-    return [...data.quizzes.values()]
-      .filter((q) => q.documentId === documentId)
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  },
-  async createAttempt(input) {
-    const attemptId = uid();
-    data.attempts.set(input.quizId, { ...input, attemptId });
-    return attemptId;
-  },
-  async getLatestAttempt(quizId) {
-    return data.attempts.get(quizId) ?? null;
-  },
-};
 
 /* ------------------------------ Supabase ------------------------------- */
 
@@ -410,11 +316,11 @@ function supabaseStore(sb: SupabaseClient, userId: string): Store {
 }
 
 /**
- * Returns a store bound to the current request. Falls back to the in-memory
- * store whenever Supabase isn't configured or no session exists (demo mode).
+ * Returns server storage bound to the authenticated user.
+ * Demo requests must use browser storage rather than a server-memory fallback.
  */
 export async function getStore(userId: string): Promise<Store> {
-  if (!hasSupabase()) return memoryStore;
+  if (!hasSupabase()) throw new Error("Demo documents use browser storage. Server storage requires Supabase.");
   if (!env.supabaseServiceKey) throw new Error("Server storage configuration is incomplete.");
   const sb = createClient(env.supabaseUrl, env.supabaseServiceKey, { auth: { persistSession: false, autoRefreshToken: false } });
   return supabaseStore(sb, userId);

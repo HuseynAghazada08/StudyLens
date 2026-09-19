@@ -12,6 +12,8 @@ import { QuizTab } from "@/components/workspace/QuizTab";
 import { AskTab } from "@/components/workspace/AskTab";
 import { SourceViewer } from "@/components/workspace/SourceViewer";
 import type { DocumentDetail } from "@/lib/types";
+import { hasSupabase } from "@/lib/env-client";
+import { loadBrowserDocument } from "@/lib/browser-store";
 
 const TABS = [
   { id: "summary", label: "Summary", icon: <FileText className="h-4 w-4" /> },
@@ -31,6 +33,12 @@ export default function DocumentWorkspacePage() {
 
   const load = useCallback(async () => {
     try {
+      if (!hasSupabase) {
+        setDetail(await loadBrowserDocument(id));
+        setDemoMode(true);
+        setError(null);
+        return;
+      }
       const res = await fetch(`/api/documents/${id}`);
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Could not load this document.");
@@ -73,7 +81,8 @@ export default function DocumentWorkspacePage() {
         </div>
         <ThemeToggle />
       </header>
-      {demoMode && <div className="mb-5 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200"><strong>Offline demo.</strong> Summaries use extracted passages; quizzes use word-recall exercises. Difficulty changes recall prompts, not AI reasoning. Short answers use approximate keyword grading. Connect OpenAI for richer study material.</div>}
+      {demoMode && <div className="mb-5 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200"><strong>Offline demo.</strong> Summaries use extracted passages; quizzes use word-recall exercises. Difficulty changes recall prompts, not AI reasoning. Short answers use approximate keyword grading. Configure Supabase and OpenAI for richer study material.</div>}
+      {!hasSupabase && <p className="mb-4 text-xs text-stone-500">Saved on this browser and domain. Refreshing or restarting the server will not remove your study session.</p>}
       {error && <p role="alert" className="mb-4 rounded-xl bg-red-50 p-4 text-sm text-red-700 dark:bg-red-950 dark:text-red-200">{error}</p>}
       {doc.status === "processing" && <Card className="p-8"><Spinner label="Analyzing your document…" /><p className="mt-4 text-sm text-stone-500">If processing was interrupted, retry after five minutes.</p><Button className="mt-4" variant="secondary" loading={retrying} onClick={retry}>Retry interrupted analysis</Button></Card>}
       {doc.status === "error" && <Card className="p-8"><h2 className="font-medium text-red-600">Analysis failed</h2><p className="my-3 text-sm text-stone-500">{doc.error}</p><Button loading={retrying} onClick={retry}>Retry analysis</Button></Card>}

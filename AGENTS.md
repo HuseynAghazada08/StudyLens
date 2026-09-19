@@ -17,5 +17,6 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 - Set `TEST_SERVER_MODE=production` when running browser tests against `next start`; preview-origin tests then expect rejection. Development accepts HTTP(S) origins on exactly localhost or 127.0.0.1 with arbitrary ports; production requires the same scheme, host and port.
 - Secrets stay in server modules. Browser code imports `env-client.ts`, never secret-bearing modules.
 - Supabase persistence is independent of OpenAI availability. The server service-role client requires route-level ownership checks; questions and mutations are not accessible through the public Supabase client.
-- Demo sessions use signed HttpOnly cookies and process-local storage. Configure Supabase for Vercel; do not rely on process-local demo persistence across serverless invocations.
+- Without Supabase, the upload API returns a stateless document snapshot. `browser-store.ts` saves documents, quizzes and latest results in IndexedDB before navigation. All later demo study operations use browser storage; never restore a server-memory fallback or require a demo-session signing secret.
+- Demo data is browser-profile/origin scoped, including Vercel deployments. Regression tests clear cookies and block document/quiz APIs before refreshing. Supabase mode continues using authenticated server storage.
 - Upload limit: 4 MB, 80 pages, 160,000 extracted characters. Citations open extracted source text, not a rendered PDF image.

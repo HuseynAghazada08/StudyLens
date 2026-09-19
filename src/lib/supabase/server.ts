@@ -1,7 +1,6 @@
 import "server-only";
-import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { createServerClient } from "@supabase/ssr";
-import { cookies, headers } from "next/headers";
+import { cookies } from "next/headers";
 import { env, hasSupabase } from "../env";
 
 /**
@@ -36,21 +35,7 @@ export interface SessionUser {
  * isn't configured so the app stays usable in demo mode.
  */
 export async function getSessionUser(): Promise<SessionUser | null> {
-  if (!hasSupabase()) {
-    const jar = await cookies();
-    const global = globalThis as typeof globalThis & { demoSigningKey?: string };
-    const key = process.env.DEMO_SESSION_SECRET || (global.demoSigningKey ??= randomBytes(32).toString("hex"));
-    const sign = (id: string) => createHmac("sha256", key).update(id).digest("hex");
-    const [storedId, signature] = (jar.get("studylens-demo")?.value ?? "").split(".");
-    let id = storedId;
-    const valid = id && /^[a-f0-9]{48}$/.test(id) && signature?.length === 64 && timingSafeEqual(Buffer.from(signature), Buffer.from(sign(id)));
-    if (!valid) {
-      id = randomBytes(24).toString("hex");
-      const secure = Boolean(process.env.VERCEL) || (await headers()).get("x-forwarded-proto") === "https";
-      jar.set("studylens-demo", `${id}.${sign(id)}`, { httpOnly: true, sameSite: "lax", secure, path: "/", maxAge: 86400 });
-    }
-    return { id, email: null };
-  }
+  if (!hasSupabase()) return { id: "browser-demo", email: null };
   const supabase = await createSupabaseServer();
   const {
     data: { user },

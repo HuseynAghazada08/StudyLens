@@ -5,17 +5,20 @@ import { buildChunks } from "@/lib/chunking";
 import { analyzeDocument } from "@/lib/analysis";
 import { demoAnalyze } from "@/lib/demo";
 import { getStore } from "@/lib/store";
+import type { BrowserDocument } from "@/lib/browser-store";
+import { uid } from "@/lib/utils";
 
 export const maxDuration = 300;
 
 /** GET /api/documents — list the current user's documents. */
 export const GET = withErrors(async function GET() {
-  const user = await requireUser();
+  const user = await requireUser(false, false);
   if (isResponse(user)) return user;
 
+  if (!hasSupabase()) return Response.json({ documents: [], demoMode: true, browserStorage: true });
   const store = await getStore(user.id);
   const documents = await store.listDocuments(user.id);
-  return Response.json({ documents, demoMode: !hasOpenAI(), temporaryStorage: !hasSupabase() });
+  return Response.json({ documents, demoMode: !hasOpenAI(), browserStorage: false });
 });
 
 /**
@@ -23,7 +26,7 @@ export const GET = withErrors(async function GET() {
  * per-page text, chunks it, generates study material, and stores everything.
  */
 export const POST = withErrors(async function POST(request: Request) {
-  const user = await requireUser(true);
+  const user = await requireUser(hasSupabase(), false);
   if (isResponse(user)) return user;
 
   if (Number(request.headers.get("content-length")) > (env.maxUploadMb * 1024 * 1024 + 65536)) return err("Upload exceeds the 4 MB limit.", 413);
@@ -45,7 +48,6 @@ export const POST = withErrors(async function POST(request: Request) {
   }
   if (file.size === 0) return err("The uploaded file is empty.");
 
-  const store = await getStore(user.id);
   let pages;
   try {
     const bytes = await file.arrayBuffer();
@@ -59,6 +61,17 @@ export const POST = withErrors(async function POST(request: Request) {
     );
   }
 
+  if (!hasSupabase()) {
+    const id = uid();
+    const browserDocument: BrowserDocument = {
+      document: { id, userId: "browser-demo", name: file.name, pageCount: pages.length, status: "ready", error: null, createdAt: new Date().toISOString() },
+      pages,
+      material: demoAnalyze(pages, buildChunks(pages)),
+    };
+    return Response.json({ documentId: id, browserDocument });
+  }
+
+  const store = await getStore(user.id);
   const doc = await store.createDocument({
     userId: user.id,
     name: file.name,

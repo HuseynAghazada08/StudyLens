@@ -19,12 +19,21 @@ import {
 } from "@/components/ui";
 import { PageCitation } from "@/components/PageCitation";
 import { cn } from "@/lib/utils";
+import { hasSupabase } from "@/lib/env-client";
+import { browserQuiz, browserPractice, browserResult, browserSubmit } from "@/lib/browser-store";
 import type {
   Difficulty,
   PublicQuiz,
   QuizResult,
   QuizTypeOption,
 } from "@/lib/types";
+
+async function quizRequest<T>(url: string, body?: unknown): Promise<T> {
+  const response = await fetch(url, body === undefined ? undefined : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error ?? "The quiz operation failed. Please retry.");
+  return data;
+}
 
 type Phase = "config" | "taking" | "results";
 
@@ -65,17 +74,8 @@ export function QuizTab({
     setBusy(true);
     setError(null);
     try {
-      const res = await fetch(`/api/documents/${documentId}/quiz`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          questionCount: count,
-          difficulty,
-          type,
-        }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error ?? "Quiz generation failed.");
+      const config = { questionCount: count, difficulty, type };
+      const data = !hasSupabase ? await browserQuiz(documentId, config) : await quizRequest<{ quiz: PublicQuiz }>(`/api/documents/${documentId}/quiz`, config);
       setQuiz(data.quiz);
       setKnownQuizzes(previous => [data.quiz, ...previous]);
       setResult(null);
@@ -92,13 +92,7 @@ export function QuizTab({
     setBusy(true);
     setError(null);
     try {
-      const res = await fetch(`/api/quizzes/${result.quizId}/practice`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ attemptId: result.attemptId }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error ?? "Could not build practice quiz.");
+      const data = !hasSupabase ? await browserPractice(result.quizId, result.attemptId) : await quizRequest<{ quiz: PublicQuiz }>(`/api/quizzes/${result.quizId}/practice`, { attemptId: result.attemptId });
       setQuiz(data.quiz);
       setKnownQuizzes(previous => [data.quiz, ...previous]);
       setResult(null);
@@ -187,9 +181,7 @@ export function QuizTab({
                     <button className="mt-1 px-4 py-2 text-xs font-medium text-indigo-600 dark:text-indigo-300" disabled={busy} onClick={async () => {
                       setBusy(true); setError(null);
                       try {
-                        const res = await fetch(`/api/quizzes/${q.id}/result`);
-                        const data = await res.json();
-                        if (!res.ok) throw new Error(data.error);
+                        const data = !hasSupabase ? await browserResult(q.id) : await quizRequest<QuizResult>(`/api/quizzes/${q.id}/result`);
                         setQuiz(q); setResult(data); setPhase("results");
                       } catch (e) { setError(e instanceof Error ? e.message : "Could not load results."); }
                       finally { setBusy(false); }
@@ -304,18 +296,8 @@ function QuizTaker({
     setSubmitting(true);
     setError(null);
     try {
-      const res = await fetch(`/api/quizzes/${quiz.id}/submit`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          answers: quiz.questions.map((question) => ({
-            questionId: question.id,
-            answer: answers[question.id] ?? "",
-          })),
-        }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error ?? "Grading failed.");
+      const submitted = quiz.questions.map(question => ({ questionId: question.id, answer: answers[question.id] ?? "" }));
+      const data = !hasSupabase ? await browserSubmit(quiz.id, submitted) : await quizRequest<QuizResult>(`/api/quizzes/${quiz.id}/submit`, { answers: submitted });
       onFinish(data);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Grading failed.");

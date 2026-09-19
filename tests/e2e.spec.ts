@@ -1,6 +1,22 @@
 import { randomInt } from "node:crypto";
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 import { samplePdf } from "../src/lib/sample";
+import type { Quiz, QuizResult } from "../src/lib/types";
+import type { BrowserDocument } from "../src/lib/browser-store";
+
+async function stored<T>(page: Page, table: "documents" | "quizzes" | "results"): Promise<T[]> {
+  return page.evaluate(table => new Promise<T[]>((resolve, reject) => {
+    const open = indexedDB.open("studylens-demo", 1);
+    open.onerror = () => reject(open.error);
+    open.onsuccess = () => {
+      const db = open.result;
+      const transaction = db.transaction(table, "readonly");
+      const request = transaction.objectStore(table).getAll();
+      transaction.oncomplete = () => { db.close(); resolve(request.result); };
+      transaction.onabort = () => { db.close(); reject(transaction.error); };
+    };
+  }), table);
+}
 
 const base = process.env.TEST_BASE_URL || "http://localhost:3000";
 test.setTimeout(90000);
@@ -25,7 +41,7 @@ for (const hostname of ["localhost", "127.0.0.1"]) {
       expect(new URL(origin).host).not.toBe(new URL(base).host);
       if (process.env.TEST_SERVER_MODE === "production") {
         expect(response.status()).toBe(403);
-        await expect(page.getByRole("alert")).toHaveText("Cross-origin requests are not allowed.");
+        await expect(page.getByRole("alert").filter({ hasText: "Cross-origin requests are not allowed." })).toBeVisible();
       } else {
         expect(response.status(), await response.text()).toBe(200);
         await expect(page.getByText("Document processed", { exact: true })).toBeVisible();
@@ -33,6 +49,50 @@ for (const hostname of ["localhost", "127.0.0.1"]) {
       }
     });
   }
+}
+
+for (const action of ["Choose PDF", "Try sample PDF"]) {
+  test(`browser persistence: ${action} survives refresh without backend document state`, async ({ page, context }) => {
+    await page.goto(`${base}/dashboard`);
+    if (action === "Choose PDF") {
+      const chooser = page.waitForEvent("filechooser");
+      await page.getByRole("button", { name: action, exact: true }).click();
+      await (await chooser).setFiles({ name: "Persistent notes.pdf", mimeType: "application/pdf", buffer: Buffer.from(samplePdf()) });
+    } else await page.getByRole("button", { name: action, exact: true }).click();
+    await expect(page.getByText("Document processed", { exact: true })).toBeVisible();
+    const url = page.url();
+    const remoteRequests: string[] = [];
+    await context.route(/\/api\/(documents|quizzes)(\/|$)/, route => { remoteRequests.push(route.request().url()); return route.abort(); });
+    await context.clearCookies();
+    await page.reload();
+    await expect(page.getByText("One-minute summary", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "p.2", exact: true }).first().click();
+    await expect(page.getByRole("dialog")).toContainText("Photosynthesis");
+    await page.keyboard.press("Escape");
+    await page.getByRole("tab", { name: "Quiz", exact: true }).click();
+    await page.getByRole("button", { name: "5", exact: true }).click();
+    await page.getByRole("button", { name: "Generate Quiz", exact: true }).click();
+    await expect(page.getByText("Question 1 of 5", { exact: true })).toBeVisible();
+    for (let i = 0; i < 4; i++) await page.getByRole("button", { name: "Next", exact: true }).click();
+    await page.getByRole("button", { name: /Submit/ }).click();
+    await expect(page.getByText("0%", { exact: true })).toBeVisible();
+    await page.reload();
+    await page.getByRole("tab", { name: "Quiz", exact: true }).click();
+    await page.getByRole("button", { name: "View last result" }).click();
+    await expect(page.getByText("0%", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Practice My Weak Topics" }).click();
+    await expect(page.getByText("Question 1 of 5", { exact: true })).toBeVisible();
+    await page.getByRole("tab", { name: "Ask PDF" }).click();
+    await page.getByRole("textbox", { name: "Ask a question about the document" }).fill("What is photosynthesis?");
+    await page.getByRole("button", { name: "Send question" }).click();
+    await expect(page.getByText(/Based on the document:/)).toBeVisible();
+    const anotherTab = await context.newPage();
+    await anotherTab.goto(url);
+    await expect(anotherTab.getByText("Document processed", { exact: true })).toBeVisible();
+    await page.goto(`${base}/dashboard`);
+    await expect(page.getByRole("link", { name: action === "Choose PDF" ? /Persistent notes.pdf/ : /Cell Biology - StudyLens.pdf/ })).toBeVisible();
+    expect(remoteRequests).toEqual([]);
+  });
 }
 
 test("Choose PDF uploads through the browser file picker", async ({ page }) => {
@@ -70,9 +130,9 @@ test("complete demo: upload, sources, quiz, adaptive practice and cited chat", a
   await page.getByRole("button", { name: /Submit/ }).click();
   await expect(page.getByText("0%", { exact: true })).toBeVisible();
   await expect(page.getByText("Answer review", { exact: true })).toBeVisible();
-  const practiceResponse = page.waitForResponse(r => r.url().endsWith("/practice") && r.request().method() === "POST");
+  const original = (await stored<Quiz>(page, "quizzes"))[0];
+  const result = (await stored<QuizResult>(page, "results"))[0];
   await page.getByRole("button", { name: "Practice My Weak Topics" }).click();
-  expect((await practiceResponse).ok()).toBeTruthy();
   await expect(page.getByText("Question 1 of 5", { exact: true })).toBeVisible();
   await page.getByRole("tab", { name: "Ask PDF" }).click();
   await page.getByRole("textbox", { name: "Ask a question about the document" }).fill("What is photosynthesis?");
@@ -81,12 +141,11 @@ test("complete demo: upload, sources, quiz, adaptive practice and cited chat", a
   await page.getByRole("textbox", { name: "Ask a question about the document" }).fill("Who won the Wimbledon tennis championship?");
   await page.getByRole("button", { name: "Send question" }).click();
   await expect(page.getByText("Not found in document", { exact: true })).toBeVisible();
-  const detail = await (await page.request.get(`${base}/api/documents/${id}`)).json();
+  const detail = (await stored<BrowserDocument>(page, "documents")).find(d => d.document.id === id)!;
   expect(detail.pages).toHaveLength(4);
-  for (const quiz of detail.quizzes) for (const question of quiz.questions) {
-    expect(question).not.toHaveProperty("correctAnswer");
-    expect(question).not.toHaveProperty("explanation");
-  }
+  const practice = (await stored<Quiz>(page, "quizzes")).find(q => q.parentQuizId === original.id)!;
+  expect(practice.questions.every(q => result.weakTopics.some(t => t.topic === q.topic))).toBeTruthy();
+  expect((await page.request.get(`${base}/api/documents/${id}`)).status()).toBe(404);
   await page.getByRole("button", { name: "Toggle dark mode" }).click();
   await page.screenshot({ path: info.outputPath("workspace-dark.png"), fullPage: true });
   await page.setViewportSize({ width: 390, height: 844 });
@@ -96,28 +155,49 @@ test("complete demo: upload, sources, quiz, adaptive practice and cited chat", a
   expect(errors).toEqual([]);
 });
 
-test("API enforces ownership, hides answer keys, and derives practice from saved results", async ({ playwright }) => {
-  const owner = await playwright.request.newContext();
-  const other = await playwright.request.newContext();
-  await owner.get(`${base}/api/documents`);
-  const upload = await owner.post(`${base}/api/documents`, { multipart: { file: { name: "sample.pdf", mimeType: "application/pdf", buffer: Buffer.from(samplePdf()) } } });
+test("demo upload is stateless and does not expose stored documents through API routes", async ({ request }) => {
+  const upload = await request.post(`${base}/api/documents`, { multipart: { file: { name: "sample.pdf", mimeType: "application/pdf", buffer: Buffer.from(samplePdf()) } } });
   expect(upload.ok()).toBeTruthy();
-  const { documentId } = await upload.json();
-  expect((await other.get(`${base}/api/documents/${documentId}`)).status()).toBe(404);
-  const { quiz } = await (await owner.post(`${base}/api/documents/${documentId}/quiz`, { data: { questionCount: 5, difficulty: "easy", type: "multiple_choice" } })).json();
-  expect(quiz.questions).toHaveLength(5);
-  const result = await (await owner.post(`${base}/api/quizzes/${quiz.id}/submit`, { data: { answers: quiz.questions.map((q: { id: string }) => ({ questionId: q.id, answer: "" })) } })).json();
-  expect(result.score).toBe(0);
-  const focused = await owner.post(`${base}/api/quizzes/${quiz.id}/practice`, { data: { attemptId: result.attemptId, weakTopics: [{ topic: "Invented topic", pages: [999] }] } });
-  expect(focused.ok()).toBeTruthy();
-  const practice = (await focused.json()).quiz;
-  expect(practice.parentQuizId).toBe(quiz.id);
-  expect(practice.questions.every((q: { topic: string }) => result.weakTopics.some((t: { topic: string }) => t.topic === q.topic))).toBeTruthy();
-  expect((await other.post(`${base}/api/quizzes/${quiz.id}/submit`, { data: { answers: quiz.questions.map((q: { id: string }) => ({ questionId: q.id, answer: "" })) } })).status()).toBe(404);
-  const perfect = await owner.post(`${base}/api/quizzes/${quiz.id}/submit`, { data: { answers: result.answers.map((a: { questionId: string; correctAnswer: string }) => ({ questionId: a.questionId, answer: a.correctAnswer })) } });
-  expect((await perfect.json()).score).toBe(5);
-  expect((await (await owner.get(`${base}/api/quizzes/${quiz.id}/result`)).json()).score).toBe(5);
-  await owner.dispose(); await other.dispose();
+  const { documentId, browserDocument } = await upload.json();
+  expect(browserDocument.document.id).toBe(documentId);
+  expect(browserDocument.pages).toHaveLength(4);
+  expect(browserDocument.material.oneMinuteSummary).toBeTruthy();
+  expect(upload.headers()["set-cookie"]).toBeUndefined();
+  expect((await (await request.get(`${base}/api/documents`)).json()).documents).toEqual([]);
+  expect((await request.get(`${base}/api/documents/${documentId}`)).status()).toBe(404);
+  expect((await request.post(`${base}/api/documents/${documentId}/quiz`, { data: {} })).status()).toBe(404);
+});
+
+test("saved demo sessions are browser-isolated and correct answers receive full credit", async ({ page, browser }) => {
+  await page.goto(`${base}/dashboard`);
+  await page.getByRole("button", { name: "Try sample PDF" }).click();
+  await expect(page.getByText("Document processed", { exact: true })).toBeVisible();
+  const isolated = await browser.newContext();
+  const visitor = await isolated.newPage();
+  await visitor.goto(page.url());
+  await expect(visitor.getByRole("alert").filter({ hasText: "not saved in this browser" })).toBeVisible();
+  await isolated.close();
+  await page.getByRole("tab", { name: "Quiz", exact: true }).click();
+  await page.getByRole("button", { name: "5", exact: true }).click();
+  await page.getByRole("button", { name: "Multiple choice", exact: true }).click();
+  await page.getByRole("button", { name: "Generate Quiz", exact: true }).click();
+  await expect(page.getByText("Question 1 of 5", { exact: true })).toBeVisible();
+  const quiz = (await stored<Quiz>(page, "quizzes"))[0];
+  for (let i = 0; i < quiz.questions.length; i++) {
+    await page.getByRole("button", { name: new RegExp(`^[A-D] ${quiz.questions[i].correctAnswer}$`) }).click();
+    if (i < quiz.questions.length - 1) await page.getByRole("button", { name: "Next", exact: true }).click();
+  }
+  await page.getByRole("button", { name: /Submit/ }).click();
+  await expect(page.getByText("100%", { exact: true })).toBeVisible();
+  expect((await stored<QuizResult>(page, "results"))[0].score).toBe(5);
+});
+
+test("unavailable browser storage shows an error instead of navigating to a missing document", async ({ page }) => {
+  await page.addInitScript(() => Object.defineProperty(window, "indexedDB", { get: () => undefined }));
+  await page.goto(`${base}/dashboard`);
+  await page.getByRole("button", { name: "Try sample PDF" }).click();
+  await expect(page.getByRole("alert").filter({ hasText: "Browser storage is unavailable" })).toBeVisible();
+  await expect(page).toHaveURL(`${base}/dashboard`);
 });
 
 test("rejects fake PDFs, oversized uploads, malformed bodies and cross-origin requests", async ({ request }) => {

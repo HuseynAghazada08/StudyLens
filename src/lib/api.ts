@@ -1,5 +1,5 @@
 import { headers } from "next/headers";
-import { hasOpenAI, hasSupabase } from "./env";
+import { hasSupabase } from "./env";
 import { isAllowedOrigin } from "./origin";
 import { getSessionUser, type SessionUser } from "./supabase/server";
 
@@ -8,13 +8,13 @@ export function err(message: string, status = 400) {
 }
 
 /** Returns the session user or a 401 Response to send back. */
-export async function requireUser(costly = false): Promise<SessionUser | Response> {
+export async function requireUser(costly = false, needsServerStorage = true): Promise<SessionUser | Response> {
   const h = await headers();
   const origin = h.get("origin");
   const development = process.env.NODE_ENV === "development";
   const protocol = h.get("x-forwarded-proto") ?? (development ? "http" : "https");
   if (!isAllowedOrigin(origin, h.get("host"), protocol, development)) return err("Cross-origin requests are not allowed.", 403);
-  if (process.env.VERCEL && hasOpenAI() && !hasSupabase()) return err("Configure Supabase authentication before enabling AI on a public deployment.", 503);
+  if (needsServerStorage && !hasSupabase()) return err("Demo documents are saved in your browser, not on the server. Open them from this browser's dashboard.", 404);
   const user = await getSessionUser();
   if (!user) return err("You must be signed in.", 401);
   if (costly) {

@@ -16,6 +16,6 @@ export const hasSupabase = () =>
 
 /**
  * Demo mode keeps the whole product usable without credentials:
- * in-memory storage, no login wall, extractive (non-AI) study material.
+ * browser storage, no login wall, extractive (non-AI) study material.
  */
 export const isDemoMode = () => !hasOpenAI() || !hasSupabase();
